@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config()
 const app = express();
@@ -28,35 +29,178 @@ async function run() {
     await client.connect();
 
     const menuCollection = client.db('bistroDB').collection('menu');
+    const userCollection = client.db('bistroDB').collection('users');
     const reviewsCollection = client.db('bistroDB').collection('reviews')
     const cartsCollection = client.db('bistroDB').collection('carts')
 
-    app.get('/menu',async(req,res) =>{
-        const result = await menuCollection.find().toArray();
-        res.send(result)
+    // jwt related api
+
+    app.post('/jwt', async (req, res) => {
+      const user = req.body;
+      console.log(user.email);
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
+      res.send({ token })
     })
-    app.get('/reviews',async(req,res) =>{
-        const result = await reviewsCollection.find().toArray();
-        res.send(result)
+
+    // middleware
+
+    const verifyToken = (req, res, next) => {
+      console.log('inside verify token', req.headers.authorization);
+      if (!req.headers.authorization) {
+        return res.status(401).send({ message: 'unauthorized access' })
+      }
+      const token = req.headers.authorization.split(' ')[1]
+      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (error, decoded) => {
+        if (error) {
+          return res.status(401).send({ message: 'unauthorized access' })
+        }
+        req.decoded = decoded;
+        next();
+      })
+    }
+
+    // use verify admin after verify token
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const result = await userCollection.findOne(query);
+      const isAdmin = result?.role === 'admin';
+      if (!isAdmin) {
+        return res.status(403).send({ message: 'forbidden access' })
+      }
+      next()
+    }
+
+    //  user related api
+
+    app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
+
+      const result = await userCollection.find().toArray();
+      res.send(result)
+    })
+
+    app.post('/users', async (req, res) => {
+      const user = req.body;
+      const query = { emil: user?.email }
+      const existingUser = await userCollection.findOne(query)
+      if (existingUser) {
+        return res.send({ message: 'user already exists', insertedId: null })
+      }
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    })
+
+    app.delete('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) }
+      const result = await userCollection.deleteOne(query);
+      res.send(result);
+    })
+
+    // admin api
+    app.patch('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) }
+      const updatedDoc = {
+        $set: {
+          role: 'admin'
+
+        }
+      }
+      const result = await userCollection.updateOne(query, updatedDoc)
+      res.send(result)
+    })
+
+    app.get('/users/:email', verifyToken, async (req, res) => {
+      const email = req.params.email;
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: 'forbidden access' })
+      }
+      const query = { email: email }
+      const result = await userCollection.findOne(query);
+      let admin = false;
+      if (result) {
+        admin = result?.role === 'admin';
+      }
+      res.send({ admin });
+    })
+
+    //  manu related
+    app.get('/menu', async (req, res) => {
+      const result = await menuCollection.find().toArray();
+      res.send(result)
+    })
+
+    // admin menu insert
+    app.post('/menu', verifyToken, verifyAdmin, async (req, res) => {
+      const item = req.body;
+      const result = await menuCollection.insertOne(item);
+      res.send(result)
+    })
+
+    //  admin menu delete
+
+    app.delete('/menu/:id', verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: id }
+      const result = await menuCollection.deleteOne(query)
+      res.send(result)
+
+    })
+    // admin menu update
+    app.get('/menu/:id', async (req, res) => {
+      const id = req.params.id;
+      console.log({id});
+      const query = { _id: id }
+      const result = await menuCollection.findOne(query)
+      console.log(result);
+      res.send(result)
+    })
+
+    app.patch('/menu/:id', async (req, res) => {
+      const item = req.body;
+      const id = req.params.id;
+      console.log(item,id);
+      const filter = { _id: id }
+      const updatedDoc = {
+        $set: {
+          name: item.name,
+          category: item.category,
+          price: item.price,
+          recipe: item.recipe,
+          image: item.image
+        }
+
+
+      }
+      const result = await menuCollection.updateOne(filter, updatedDoc);
+      res.send(result)
+    })
+
+    // reviews related
+    app.get('/reviews', async (req, res) => {
+      const result = await reviewsCollection.find().toArray();
+      res.send(result)
     })
 
     // cart collection
 
-    app.post('/carts',async(req,res) =>{
+    app.post('/carts', async (req, res) => {
       const cartItem = req.body;
       const result = await cartsCollection.insertOne(cartItem);
       res.send(result)
     })
-    app.get('/carts',async(req,res) =>{
+    app.get('/carts', async (req, res) => {
       const email = req.query.email;
-      const query = {email :email}
-      const result  = await cartsCollection.find(query).toArray();
+      const query = { email: email }
+      const result = await cartsCollection.find(query).toArray();
       res.send(result)
     })
 
-    app.delete('/carts/:id',async(req,res) =>{
+    app.delete('/carts/:id', async (req, res) => {
       const id = req.params.id;
-      const query = {_id : new ObjectId(id)};
+      const query = { _id: new ObjectId(id) };
       const result = await cartsCollection.deleteOne(query);
       res.send(result)
     })
@@ -73,10 +217,10 @@ async function run() {
 run().catch(console.dir);
 
 
-app.get('/',(req,res) =>{
-    res.send('bistro boss is running')
+app.get('/', (req, res) => {
+  res.send('bistro boss is running')
 })
 
-app.listen(port,()=>{
-    console.log(`bistro boss is running on port : ${port}`);
+app.listen(port, () => {
+  console.log(`bistro boss is running on port : ${port}`);
 })
